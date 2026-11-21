@@ -1,9 +1,9 @@
 {
-    "idf.pwythonInstallPath": "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
+    "idf.espIdfPath": "/home/keq/esp/esp-idf",
+    "idf.toolsPath": "/home/keq/.espressif",
+    "idf.pythonInstallPath": "/home/keq/.espressif/python_env/idf6.0_py3.12_env/bin/python",
     "idf.openOcdConfigs": [
         "board/esp32c5-builtin.cfg"
     ],
-    "idf.port": "/dev/tty.usbmodem5AE60351551",
-    "idf.monitorPort": "/dev/tty.usbmodem5AE60351551",
     "idf.flashType": "UART"
 }

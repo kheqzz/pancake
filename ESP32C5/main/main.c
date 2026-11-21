@@ -3,7 +3,7 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
-#include "esp_lcd_ili9341.h"
+#include "esp_lcd_st7796.h"
 #include "ft6336.h"
 #include "driver/spi_master.h"
 #include "driver/i2c.h"
@@ -121,18 +121,23 @@ static int bt_device_count = 0;
 // ============================================================================
 
 // Pin configuration
-#define LCD_MOSI 24
-#define LCD_MISO 4
-#define LCD_CLK  23
-#define LCD_CS   5  // Changed from 6 - GPIO6 is now used for battery ADC
-#define LCD_DC   3
-#define LCD_RST  2  
+// ---- VERIFIED on Waveshare ESP32-C5-WIFI6-KIT + ST7796 3.5" 14-pin + FT6336U ----
+// These are the pins actually wired on this unit (not the Waveshare default
+// 24/23/3/2 pinout). Do NOT use GPIO15 (FSPIHD / flash bus): touching it corrupts
+// flash code fetch and hard-crashes the chip. GPIO13/14 = USB D-/D+, GPIO11/12 = UART0.
+#define LCD_MOSI 8
+#define LCD_MISO 25   // panel has no SDO, but the microSD slot on the TFT module
+                      // shares this SPI bus and needs a real MISO line
+#define LCD_CLK  10
+#define LCD_CS   5
+#define LCD_DC   0
+#define LCD_RST  1
 
-// Capacitive touch I2C pins (FT6336U)
+// Capacitive touch I2C pins (FT6336U, addr 0x38)
 #define CTP_SDA  9
-#define CTP_SCL  10
-#define CTP_INT  25
-#define CTP_RST  8
+#define CTP_SCL  4
+#define CTP_INT  23   // FT6336 INT (module has its own pull-up) -> interrupt mode
+#define CTP_RST  7
 
 // Backlight control (set to -1 if LED is tied to 3V3 / no GPIO)
 #define LCD_BL_IO 26   // -1
@@ -147,7 +152,7 @@ static int bt_device_count = 0;
 #define LCD_V_RES 320
 #define LCD_HOST SPI2_HOST
 
-// MAX17048 fuel gauge configuration — I2C_NUM_0, SDA=9, SCL=10 (shared with FT6336U touch)
+// MAX17048 fuel gauge configuration — I2C_NUM_0, SDA=9, SCL=4 (shared with FT6336U touch)
 #define MAX17048_ADDR              0x36
 #define MAX17048_REG_VCELL         0x02   // Cell voltage (12-bit, 1.25mV/LSB, upper 12 bits)
 #define MAX17048_REG_SOC           0x04   // State of charge (upper byte = %, lower byte = 1/256%)
@@ -1874,7 +1879,7 @@ static void init_display(void)
         .bits_per_pixel = 16,
     };
 
-    ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(lcd_io_handle, &panel_config, &panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_st7796(lcd_io_handle, &panel_config, &panel_handle));  // ST7796 3.5" 480x320 (verified panel)
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, true));
@@ -3323,6 +3328,9 @@ void app_main(void)
         
         // Take SD/SPI mutex before mounting
         if (sd_spi_mutex && xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
+            // microSD shares SCK/MOSI/MISO with the LCD: keep the panel deselected
+            // or it answers on the bus and the card mount fails.
+            gpio_set_level(LCD_CS, 1);
             esp_err_t sd_ret = wifi_wardrive_init_sd();
             xSemaphoreGive(sd_spi_mutex);
             
@@ -3334,8 +3342,14 @@ void app_main(void)
                 ESP_LOGW(TAG, "[SD] Mount failed: %s", esp_err_to_name(sd_ret));
                 update_sd_loading_popup("Insert SD Card");
                 
-                // Wait and retry - process LVGL to keep UI responsive
-                for (int i = 0; i < 20; i++) {  // 2 second delay with LVGL processing
+                // Retry with exponential backoff (2s, 4s, 8s, 16s, then 30s cap).
+                // Hammering the mount every 2 s stole the shared SPI bus from the
+                // display flush on every attempt and made the panel flicker while
+                // no card was answering. LVGL keeps running during the wait.
+                uint32_t retry_ms = 2000u * (1u << (mount_attempts < 4 ? (mount_attempts - 1) : 4));
+                if (retry_ms > 30000u) retry_ms = 30000u;
+                ESP_LOGW(TAG, "[SD] Next mount attempt in %u ms", (unsigned)retry_ms);
+                for (uint32_t waited = 0; waited < retry_ms; waited += 100) {
                     if (xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                         lv_task_handler();
                         xSemaphoreGive(lvgl_mutex);
@@ -14709,18 +14723,48 @@ static bool parse_gps_nmea(const char *nmea_sentence)
 	return false;
 }
 
+static char gps_last_gga[128];
+static char gps_last_gsv[128];
+
 static void gps_task(void *arg)
 {
 	(void)arg;
+	uint32_t rx_total = 0;        // bytes received since boot
+	uint32_t rx_window = 0;       // bytes in the current 5 s window
+	TickType_t last_report = xTaskGetTickCount();
 	for (;;) {
 		int len = uart_read_bytes(GPS_UART_NUM, (uint8_t *)gps_rx_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(200));
 		if (len > 0) {
+			rx_total += (uint32_t)len;
+			rx_window += (uint32_t)len;
 			gps_rx_buffer[len] = '\0';
 			char *line = strtok(gps_rx_buffer, "\r\n");
 			while (line != NULL) {
+				// keep the latest position/quality + satellite-in-view sentences
+				// for the diagnostic report below
+				if (strstr(line, "GGA") == line + 3 || strstr(line, "GGA") == line + 1) {
+					strncpy(gps_last_gga, line, sizeof(gps_last_gga) - 1);
+					gps_last_gga[sizeof(gps_last_gga) - 1] = '\0';
+				} else if (strstr(line, "GSV") == line + 3 || strstr(line, "GSV") == line + 1) {
+					strncpy(gps_last_gsv, line, sizeof(gps_last_gsv) - 1);
+					gps_last_gsv[sizeof(gps_last_gsv) - 1] = '\0';
+				}
 				parse_gps_nmea(line);
 				line = strtok(NULL, "\r\n");
 			}
+		}
+		// Diagnostic: proves whether the UART sees any bytes at all and whether a
+		// fix was parsed. 0 B/5s = nothing wired or module silent; NMEA bytes but
+		// valid=0 = antenna/sky view; valid=1 = fix acquired.
+		if ((xTaskGetTickCount() - last_report) >= pdMS_TO_TICKS(5000)) {
+			ESP_LOGI(TAG, "[GPS] rx=%lu B (%.0f B/s) total=%lu valid=%d sats=%d lat=%.5f lon=%.5f",
+			         (unsigned long)rx_window, rx_window / 5.0f, (unsigned long)rx_total,
+			         (int)current_gps.valid, (int)current_gps.satellites,
+			         (double)current_gps.latitude, (double)current_gps.longitude);
+			if (gps_last_gsv[0]) ESP_LOGI(TAG, "[GPS] GSV: %s", gps_last_gsv);
+			if (gps_last_gga[0]) ESP_LOGI(TAG, "[GPS] GGA: %s", gps_last_gga);
+			rx_window = 0;
+			last_report = xTaskGetTickCount();
 		}
 		vTaskDelay(pdMS_TO_TICKS(100));
 	}

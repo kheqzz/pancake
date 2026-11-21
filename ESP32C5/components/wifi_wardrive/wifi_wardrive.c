@@ -249,8 +249,13 @@ esp_err_t wifi_wardrive_init_sd(void) {
     ESP_LOGI(TAG, "[SD] Configuring SPI host...");
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = SPI2_HOST;  // Same as LCD (already initialized by display)
-    host.max_freq_khz = 20000;  // 20 MHz (increased from 400kHz after init)
-    host.flags = SDMMC_HOST_FLAG_SPI;  // ✅ Tell driver to NOT reinitialize SPI bus
+    host.max_freq_khz = 20000;  // card + module run from the module's own 5V->3.3V regulator
+    // Keep SDMMC_HOST_FLAG_DEINIT_ARG! SDSPI_HOST_DEFAULT() sets it, and dropping it
+    // makes call_host_deinit() invoke sdspi_host_deinit() WITHOUT the slot argument,
+    // so deinit_slot() dereferences a garbage slot_info_t and the CPU panics with
+    // "Load access fault" (spi_bus_remove_device) every time the mount FAILS,
+    // e.g. when no card is inserted.
+    host.flags = SDMMC_HOST_FLAG_SPI | SDMMC_HOST_FLAG_DEINIT_ARG;  // do NOT reinit SPI bus
     ESP_LOGI(TAG, "[SD]   SPI Host: %d, Frequency: %d kHz, Flags: 0x%x", host.slot, host.max_freq_khz, host.flags);
 
     ESP_LOGI(TAG, "[SD] Configuring slot (CS=%d)...", SD_CS_PIN);
@@ -260,6 +265,33 @@ esp_err_t wifi_wardrive_init_sd(void) {
     slot_config.gpio_wp = -1;
     slot_config.host_id = (spi_host_device_t)SPI2_HOST;  // ✅ Explicit enum cast
     
+    // ---- Bus hygiene before mount -------------------------------------------
+    // The microSD shares SCK/MOSI/MISO with the LCD over long jumper wires. A weak
+    // pull-up on MISO and a burst of 0xFF clocks makes a card that was left in SPI
+    // mode by the previous power cycle answer CMD0 again (otherwise init aborts at
+    // CMD59 with ESP_ERR_TIMEOUT / 0x107).
+    gpio_set_pull_mode(SD_MISO_PIN, GPIO_PULLUP_ONLY);
+    {
+        spi_device_interface_config_t prime_cfg = {
+            .clock_speed_hz = 400 * 1000,
+            .mode = 0,
+            .spics_io_num = SD_CS_PIN,
+            .queue_size = 1,
+        };
+        spi_device_handle_t prime_dev = NULL;
+        if (spi_bus_add_device(SPI2_HOST, &prime_cfg, &prime_dev) == ESP_OK) {
+            uint8_t dummy[16];
+            memset(dummy, 0xFF, sizeof(dummy));
+            spi_transaction_t t = {
+                .length = sizeof(dummy) * 8,
+                .tx_buffer = dummy,
+            };
+            spi_device_polling_transmit(prime_dev, &t);
+            spi_bus_remove_device(prime_dev);
+            ESP_LOGI(TAG, "[SD] Bus primed (16 x 0xFF @ 400 kHz), MISO pull-up on");
+        }
+    }
+
     ESP_LOGI(TAG, "[SD] Attempting to mount filesystem...");
     ESP_LOGI(TAG, "[SD] This may take a few seconds...");
     

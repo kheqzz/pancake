@@ -1,0 +1,21 @@
+{
+  "version": 4,
+  "configurations": [
+    {
+      "name": "ESP-IDF v6.0 (esp32c5)",
+      "compileCommands": "${workspaceFolder}/ESP32C5/build/compile_commands.json",
+      "compilerPath": "/home/keq/.espressif/tools/riscv32-esp-elf/esp-15.2.0_20251204/riscv32-esp-elf/bin/riscv32-esp-elf-gcc",
+      "cStandard": "gnu23",
+      "cppStandard": "gnu++26",
+      "intelliSenseMode": "linux-gcc-arm",
+      "browse": {
+        "path": [
+          "${workspaceFolder}/ESP32C5/main",
+          "${workspaceFolder}/ESP32C5/components",
+          "${workspaceFolder}/ESP32C5/managed_components"
+        ],
+        "limitSymbolsToIncludedHeaders": true
+      }
+    }
+  ]
+}

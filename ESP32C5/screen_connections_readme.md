@@ -12,11 +12,21 @@ This document describes the hardware connections for the ESP32-C5 project with:
 
 ---
 
+> ⚠️ **WIRING CHANGE (pinout terverifikasi)**
+> Board tetap **Waveshare ESP32-C5-WIFI6-KIT**, tetapi panel 3.5" adalah modul
+> **14 pin terpisah (ST7796 + FT6336U)** yang di-wire manual, bukan LCD bawaan.
+> Karena itu angka pin di bawah **sudah diperbarui** ke hasil pengujian fisik
+> (MOSI 8, CLK 10, DC 0, RST 1, CTP SCL 4, CTP RST 7) — bukan lagi pinout bawaan
+> Waveshare (24 / 23 / 3 / 2).
+> Tabel kebenaran pin + status verifikasi: **`../docs/pin_configuration.md`**.
+> Bagian "Critical Fix: GPIO Reset (Waveshare)" di bawah disimpan sebagai catatan
+> historis untuk wiring lama.
+
 ## Hardware Components
 
 | Component | Controller/Driver | Interface | Library |
 |-----------|-------------------|-----------|---------|
-| Display | ILI9341 | SPI | `espressif/esp_lcd_ili9341` v1.2.0 |
+| Display | ST7796 | SPI | `espressif/esp_lcd_st7796` v1.0.0 (perlu `tools/patch_st7796.sh` untuk IDF 6.0) |
 | Touch Panel | FT6336U | I2C | Custom `ft6336.c` |
 | SD Card | - | SPI (shared) | ESP-IDF `sdspi` |
 | GPS | - | UART | Custom implementation |
@@ -31,12 +41,12 @@ This document describes the hardware connections for the ESP32-C5 project with:
 
 | Signal | GPIO | Description |
 |--------|------|-------------|
-| MOSI (SDI) | **GPIO 24** | SPI Data Out (shared with SD) |
-| MISO (SDO) | **GPIO 4** | SPI Data In (shared with SD) |
-| SCK (CLK) | **GPIO 23** | SPI Clock (shared with SD) |
-| CS | **GPIO 5** | Chip Select (active LOW) - changed from GPIO6 |
-| DC (RS) | **GPIO 3** | Data/Command select |
-| RST | **GPIO 2** | Hardware Reset (active LOW) |
+| MOSI (SDI) | **GPIO 8** | SPI Data Out ✅ verified |
+| MISO (SDO) | **none (-1)** | panel tidak punya SDO; bus write-only ✅ verified |
+| SCK (CLK) | **GPIO 10** | SPI Clock ✅ verified |
+| CS | **GPIO 5** | Chip Select (active LOW) ✅ verified |
+| DC (RS) | **GPIO 0** | Data/Command select ✅ verified |
+| RST | **GPIO 1** | Hardware Reset (active LOW) ✅ verified |
 | VCC | 3.3V | Power supply |
 | GND | GND | Ground |
 | LED | 3.3V | Backlight (directly connected) |
@@ -45,10 +55,10 @@ This document describes the hardware connections for the ESP32-C5 project with:
 
 | Signal | GPIO | Description |
 |--------|------|-------------|
-| SDA | **GPIO 9** | I2C Data |
-| SCL | **GPIO 10** | I2C Clock |
-| INT | **GPIO 25** | Interrupt (touch detected) |
-| RST | **GPIO 8** | Hardware Reset |
+| SDA | **GPIO 9** | I2C Data ✅ verified |
+| SCL | **GPIO 4** | I2C Clock ✅ verified |
+| INT | **-1 (not wired)** | polling mode; INT belum diverifikasi (kandidat GPIO25) |
+| RST | **GPIO 7** | Hardware Reset ✅ verified |
 | VCC | 3.3V | Power supply |
 | GND | GND | Ground |
 
@@ -56,10 +66,10 @@ This document describes the hardware connections for the ESP32-C5 project with:
 
 | Signal | GPIO | Description |
 |--------|------|-------------|
-| MOSI | **GPIO 24** | SPI Data Out (shared with LCD) |
-| MISO | **GPIO 4** | SPI Data In (shared with LCD) |
-| SCK | **GPIO 23** | SPI Clock (shared with LCD) |
-| CS | **GPIO 7** | Chip Select (active LOW) |
+| MOSI | **TBD** | wiring slot SD di board ini belum diketahui |
+| MISO | **TBD** | idem (di Marauder Pancake SD_CS diasumsikan GPIO6, mount GAGAL) |
+| SCK | **TBD** | idem |
+| CS | **TBD (6?)** | perlu konfirmasi; SD init di JANOS sedang DISABLED |
 | VCC | 3.3V | Power supply |
 | GND | GND | Ground |
 
@@ -102,29 +112,22 @@ This document describes the hardware connections for the ESP32-C5 project with:
 
 ---
 
-## GPIO Summary Table
+## GPIO Summary Table (verified)
 
-| GPIO | Function | Interface | Notes |
-|------|----------|-----------|-------|
-| 2 | LCD_RST | Output | ⚠️ Strapping pin - requires reset |
-| 3 | LCD_DC | Output | ⚠️ Strapping pin - requires reset |
-| 4 | MISO | SPI | Shared: LCD + SD |
-| 5 | LCD_CS | SPI | Display Chip Select (moved from GPIO6) |
-| 6 | BAT_ADC | ADC1_CH5 | Battery voltage monitor |
-| 7 | SD_CS | SPI | SD Card Chip Select |
-| 8 | CTP_RST | Output | Touch Reset |
-| 9 | CTP_SDA | I2C | Touch Data |
-| 10 | CTP_SCL | I2C | Touch Clock |
-| 11 | UART_TX | UART | Console (USB) |
-| 12 | UART_RX | UART | Console (USB) |
-| 13 | GPS_TX | UART | GPS Module |
-| 14 | GPS_RX | UART | GPS Module |
-| 23 | SPI_CLK | SPI | Shared: LCD + SD |
-| 24 | SPI_MOSI | SPI | Shared: LCD + SD |
-| 25 | CTP_INT | Input | Touch Interrupt |
-| 27 | NEOPIXEL | Output | LED Strip Data |
+| GPIO | Function | Interface | Status |
+|------|----------|-----------|--------|
+| 0 | LCD_DC | Output | ✅ |
+| 1 | LCD_RST | Output | ✅ |
+| 4 | CTP_SCL | I2C | ✅ |
+| 5 | LCD_CS | SPI | ✅ |
+| 7 | CTP_RST | Output | ✅ |
+| 8 | LCD_MOSI | SPI | ✅ |
+| 9 | CTP_SDA | I2C | ✅ |
+| 10 | LCD_CLK | SPI | ✅ |
+| 26 | LCD_BL | Output | ⚠️ backlight on, GPIO26 not proven |
 
----
+Reserved / do not use: 11 + 12 (UART0 console), 13 + 14 (USB D-/D+),
+15 (**FSPIHD — touching it corrupts flash and crashes the CPU**), 27 (RGB LED).
 
 ## Critical Fix: GPIO Reset for Waveshare ESP32-C5
 

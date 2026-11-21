@@ -33,17 +33,22 @@ extern "C" {
 #define LED_COUNT 1
 #define RMT_RES_HZ (10 * 1000 * 1000)
 
-// GPS UART pins
+// GPS UART pins — GPIO13/14 are USB D-/D+ (flash + monitor port), GPIO23 is
+// CTP_INT, and GPIO6 MUST NOT be used here: with a wire on GPIO6 the SD card
+// stops responding (timeout at CMD59) while it mounts fine without it.
+// GPIO15 is not usable at all on this board (immediate "Load access fault").
+// Battery level comes from a MAX17048 over I2C (9/4), so no ADC pin is needed.
 #define GPS_UART_NUM UART_NUM_1
-#define GPS_TX_PIN 13
-#define GPS_RX_PIN 14
+#define GPS_TX_PIN 2
+#define GPS_RX_PIN 3
 #define GPS_BUF_SIZE 1024
 
-// SD Card SPI pins
-#define SD_MISO_PIN 4
-#define SD_MOSI_PIN 24
-#define SD_CLK_PIN 23
-#define SD_CS_PIN 7
+// SD Card SPI pins — microSD slot is on the TFT module, so SCK/MOSI/MISO are the
+// SAME wires as the LCD (LCD_CLK 10 / LCD_MOSI 8 / LCD_MISO 25). Only CS is extra.
+#define SD_MISO_PIN 25
+#define SD_MOSI_PIN 8
+#define SD_CLK_PIN 10
+#define SD_CS_PIN 24
 
 // Application states
 typedef enum {
